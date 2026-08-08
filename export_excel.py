@@ -74,24 +74,29 @@ def build_workbook(history_path: Path, output_dir: Path, run_id: str) -> Path:
     latest_month = history_rows[-1]["reference_month"]
     latest_rows = [row for row in history_rows if row["reference_month"] == latest_month]
     latest_rows.sort(key=lambda row: _number(row["intelligence_index"]) or float("-inf"), reverse=True)
+    open_weights_count = sum(row.get("model_access_type") == "Open weights" for row in latest_rows)
+    proprietary_count = sum(row.get("model_access_type") == "Proprietary" for row in latest_rows)
+    unknown_access_count = len(latest_rows) - open_weights_count - proprietary_count
 
     overview = [[("Radar IA — histórico de modelos", 1), "", "", "", "", ""], [],
         [("Mês mais recente", 2), latest_month], [("Modelos na última coleta", 2), len(latest_rows)],
         [("Observações históricas", 2), len(history_rows)], [("Versão do Intelligence Index", 2), ", ".join(sorted({row["intelligence_index_version"] for row in latest_rows if row["intelligence_index_version"]})) or "Não informada pela API"], [],
+        [("Modelos open weights", 2), open_weights_count], [("Modelos proprietários", 2), proprietary_count], [("Classificação ainda desconhecida", 2), unknown_access_count], [],
         [("Fonte e uso", 3), "Dados coletados da API gratuita da Artificial Analysis."],
         [("Metodologia", 3), "O histórico preserva a versão do índice para evitar comparações silenciosas entre metodologias diferentes."],
+        [("Open weights", 3), "Classificação cruzada com o dataset de modelos da Epoch AI. Registros sem correspondência ficam como Unknown, sem inferência manual."],
         [("Atualização", 3), "Execute python radar_ia.py uma vez por mês. O comando adiciona o mês novo e cria este Excel."],
-        [("Atribuição", 3), "https://artificialanalysis.ai/"]]
+        [("Atribuição", 3), "https://artificialanalysis.ai/ | https://epoch.ai/data/ai-models"]]
 
-    current_headers = ["Posição", "Modelo", "Empresa", "Lançamento", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Versão índice"]
+    current_headers = ["Posição", "Modelo", "Empresa", "Lançamento", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Open weights?", "Fonte abertura", "Versão índice"]
     current = [[(header, 1) for header in current_headers]]
     for position, row in enumerate(latest_rows, start=1):
-        current.append([position, row["model_name"], row["model_creator"], row["release_date"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row["intelligence_index_version"]])
+        current.append([position, row["model_name"], row["model_creator"], row["release_date"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row.get("model_access_type", "Unknown"), row.get("access_classification_source", ""), row["intelligence_index_version"]])
 
-    history_headers = ["Mês", "Coletado em UTC", "ID", "Slug", "Modelo", "Empresa", "Lançamento", "Tier", "Versão índice", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "TTFT (s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Fonte"]
+    history_headers = ["Mês", "Coletado em UTC", "ID", "Slug", "Modelo", "Empresa", "Lançamento", "Tier", "Versão índice", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "TTFT (s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Open weights?", "Fonte abertura", "Modelo Epoch", "Acesso Epoch", "Fonte"]
     history = [[(header, 1) for header in history_headers]]
     for row in history_rows:
-        history.append([row["reference_month"], row["collected_at_utc"], row["model_id"], row["model_slug"], row["model_name"], row["model_creator"], row["release_date"], row["api_tier"], row["intelligence_index_version"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), _number(row["median_time_to_first_token_seconds"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row["source_url"]])
+        history.append([row["reference_month"], row["collected_at_utc"], row["model_id"], row["model_slug"], row["model_name"], row["model_creator"], row["release_date"], row["api_tier"], row["intelligence_index_version"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), _number(row["median_time_to_first_token_seconds"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row.get("model_access_type", "Unknown"), row.get("access_classification_source", ""), row.get("epoch_model_name", ""), row.get("epoch_accessibility", ""), row["source_url"]])
 
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / f"Radar_IA_{run_id}.xlsx"
@@ -106,6 +111,6 @@ def build_workbook(history_path: Path, output_dir: Path, run_id: str) -> Path:
         archive.writestr("xl/_rels/workbook.xml.rels", workbook_relationships)
         archive.writestr("xl/styles.xml", _styles())
         archive.writestr("xl/worksheets/sheet1.xml", _worksheet(overview, [31, 85, 12, 12, 12, 12], merge_title=True))
-        archive.writestr("xl/worksheets/sheet2.xml", _worksheet(current, [10, 38, 20, 14, 14, 12, 12, 15, 18, 15, 16, 16], frozen=True))
-        archive.writestr("xl/worksheets/sheet3.xml", _worksheet(history, [10, 22, 38, 32, 42, 20, 14, 12, 14, 12, 12, 12, 15, 12, 18, 15, 16, 52], frozen=True))
+        archive.writestr("xl/worksheets/sheet2.xml", _worksheet(current, [10, 38, 20, 14, 14, 12, 12, 15, 18, 15, 16, 16, 20, 16], frozen=True))
+        archive.writestr("xl/worksheets/sheet3.xml", _worksheet(history, [10, 22, 38, 32, 42, 20, 14, 12, 14, 12, 12, 12, 15, 12, 18, 15, 16, 16, 18, 32, 20, 52], frozen=True))
     return output_path

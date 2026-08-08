@@ -1,26 +1,15 @@
 # Radar IA
 
 O Radar IA coleta mensalmente a API gratuita da Artificial Analysis, acrescenta
-os dados a uma base histórica local e cria um novo Excel a cada execução.
+os dados a uma base histórica local e cria um novo Excel a cada execução. Ele
+também cruza os modelos com o dataset público da Epoch AI para indicar quando
+os pesos são abertos; registros sem correspondência ficam como `Unknown`.
 
 ## Primeira instalação no VS Code
 
 1. Instale Python 3.9 ou superior.
 2. Abra esta pasta no VS Code e abra o terminal integrado (`Terminal` → `New Terminal`).
-3. Crie e ative um ambiente virtual:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-No Windows, a ativação é:
-
-```powershell
-.venv\Scripts\Activate.ps1
-```
-
-4. Configure a chave:
+3. Configure a chave:
 
 ```bash
 cp .env.example .env
@@ -31,7 +20,7 @@ fica somente no seu computador e não é enviado ao GitHub.
 
 ## Coleta mensal
 
-Com o ambiente virtual ativado, rode:
+Rode:
 
 ```bash
 python radar_ia.py

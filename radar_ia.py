@@ -24,7 +24,8 @@ FIELDS = [
     "release_date", "intelligence_index", "coding_index", "agentic_index",
     "median_output_tokens_per_second", "median_time_to_first_token_seconds",
     "intelligence_index_cost_per_task_usd", "price_1m_input_tokens_usd",
-    "price_1m_output_tokens_usd", "source_url",
+    "price_1m_output_tokens_usd", "model_access_type", "access_classification_source",
+    "epoch_model_name", "epoch_accessibility", "source_url",
 ]
 
 
@@ -74,13 +75,13 @@ def fetch_all(api_key: str) -> tuple[dict, list]:
     return first, data
 
 
-def normalize(item: dict, metadata: dict, collected_at: datetime) -> dict:
+def normalize(item: dict, metadata: dict, collected_at: datetime, access_index=None) -> dict:
     evaluations = item.get("evaluations") or {}
     pricing = item.get("pricing") or {}
     performance = item.get("performance") or {}
     creator = item.get("model_creator") or {}
     cost = item.get("artificial_analysis_intelligence_index_cost") or {}
-    return {
+    row = {
         "reference_month": collected_at.strftime("%Y-%m"),
         "collected_at_utc": collected_at.isoformat().replace("+00:00", "Z"),
         "api_tier": metadata.get("tier"),
@@ -111,22 +112,44 @@ def normalize(item: dict, metadata: dict, collected_at: datetime) -> dict:
         "price_1m_output_tokens_usd": pricing.get("price_1m_output_tokens"),
         "source_url": ENDPOINT,
     }
+    if access_index:
+        row.update(access_index.classify(row["model_name"]))
+    else:
+        row.update({
+            "model_access_type": "Unknown",
+            "access_classification_source": "Epoch AI unavailable",
+            "epoch_model_name": None,
+            "epoch_accessibility": None,
+        })
+    return row
 
 
 def append_history(rows: list[dict]) -> int:
     DATA_DIR.mkdir(exist_ok=True)
-    existing = set()
+    existing_rows = []
     if HISTORY_PATH.exists():
         with HISTORY_PATH.open(newline="", encoding="utf-8") as file:
-            existing = {(row["reference_month"], row["model_id"]) for row in csv.DictReader(file)}
-    new_rows = [row for row in rows if (row["reference_month"], row["model_id"]) not in existing]
-    write_header = not HISTORY_PATH.exists()
-    with HISTORY_PATH.open("a", newline="", encoding="utf-8") as file:
+            existing_rows = list(csv.DictReader(file))
+    existing_by_key = {(row["reference_month"], row["model_id"]): row for row in existing_rows}
+    added = 0
+    for row in rows:
+        key = (row["reference_month"], row["model_id"])
+        if key not in existing_by_key:
+            existing_rows.append(row)
+            existing_by_key[key] = row
+            added += 1
+        else:
+            old_row = existing_by_key[key]
+            for field in ("model_access_type", "access_classification_source", "epoch_model_name", "epoch_accessibility"):
+                if not old_row.get(field) or old_row.get(field) == "Unknown":
+                    old_row[field] = row[field]
+    temporary_path = HISTORY_PATH.with_suffix(".tmp")
+    with temporary_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=FIELDS)
-        if write_header:
-            writer.writeheader()
-        writer.writerows(new_rows)
-    return len(new_rows)
+        writer.writeheader()
+        writer.writerows(({field: row.get(field, "") for field in FIELDS} for row in existing_rows))
+    temporary_path.replace(HISTORY_PATH)
+    return added
 
 
 def build_workbook(run_id: str) -> Path:
@@ -144,7 +167,16 @@ def main() -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     raw_path = RAW_DIR / f"language_models_{collected_at.strftime('%Y-%m-%dT%H%M%SZ')}.json"
     raw_path.write_text(json.dumps({"metadata": metadata, "data": models}, ensure_ascii=False, indent=2), encoding="utf-8")
-    rows = [normalize(item, metadata, collected_at) for item in models]
+    access_index = None
+    try:
+        from epoch_access import fetch_epoch_access_index
+
+        access_index, epoch_csv = fetch_epoch_access_index()
+        epoch_path = RAW_DIR / f"epoch_access_{collected_at.strftime('%Y-%m-%dT%H%M%SZ')}.csv"
+        epoch_path.write_text(epoch_csv, encoding="utf-8")
+    except Exception as error:
+        print(f"Aviso: classificação open weights indisponível nesta coleta: {error}", file=sys.stderr)
+    rows = [normalize(item, metadata, collected_at, access_index) for item in models]
     added = append_history(rows)
     run_id = collected_at.strftime("%Y-%m-%dT%H%M%SZ")
     workbook_path = build_workbook(run_id)
