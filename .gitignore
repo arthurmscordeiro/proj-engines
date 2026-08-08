@@ -1,6 +1,8 @@
 .env
 data/
 outputs/
+outputs AA/
+outputs Epoch AI/
 work/
 .venv/
 node_modules

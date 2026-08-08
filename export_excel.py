@@ -67,6 +67,43 @@ def _styles():
 </styleSheet>'''
 
 
+def write_tables_workbook(output_path: Path, sheets: list[tuple[str, list, list, bool]]) -> Path:
+    """Write a simple multi-sheet workbook from tabular data using stdlib only.
+
+    Each sheet is ``(name, rows, widths, freeze_header)``.  Keeping this tiny
+    writer in-house avoids a third-party dependency on corporate machines.
+    """
+    if not sheets:
+        raise ValueError("É necessário informar ao menos uma aba para o Excel.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    overrides = "".join(
+        f'<Override PartName="/xl/worksheets/sheet{index}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        for index in range(1, len(sheets) + 1)
+    )
+    content_types = f'''<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>{overrides}</Types>'''
+    relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'''
+    workbook_sheets = "".join(
+        f'<sheet name="{escape(name[:31])}" sheetId="{index}" r:id="rId{index}"/>'
+        for index, (name, _, _, _) in enumerate(sheets, start=1)
+    )
+    workbook = f'''<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>{workbook_sheets}</sheets></workbook>'''
+    worksheet_relationships = "".join(
+        f'<Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{index}.xml"/>'
+        for index in range(1, len(sheets) + 1)
+    )
+    workbook_relationships = f'''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{worksheet_relationships}<Relationship Id="rId{len(sheets) + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'''
+    with ZipFile(output_path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", relationships)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_relationships)
+        archive.writestr("xl/styles.xml", _styles())
+        for index, (_, rows, widths, frozen) in enumerate(sheets, start=1):
+            archive.writestr(f"xl/worksheets/sheet{index}.xml", _worksheet(rows, widths, frozen=frozen))
+    return output_path
+
+
 def build_workbook(history_path: Path, run_log_path: Path, output_dir: Path, run_id: str) -> Path:
     with history_path.open(newline="", encoding="utf-8") as source:
         history_rows = list(csv.DictReader(source))

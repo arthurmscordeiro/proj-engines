@@ -196,7 +196,7 @@ def append_run_log(summary: dict) -> None:
 def build_workbook(run_id: str) -> Path:
     from export_excel import build_workbook as export_excel
 
-    return export_excel(HISTORY_PATH, RUN_LOG_PATH, ROOT / "outputs", run_id)
+    return export_excel(HISTORY_PATH, RUN_LOG_PATH, ROOT / "outputs AA", run_id)
 
 
 def main() -> None:
@@ -234,6 +234,15 @@ def main() -> None:
     })
     workbook_path = build_workbook(run_id)
     print(f"Coleta concluída: {len(models)} modelos recebidos; {changes['new_models']} novos, {changes['changed_models']} alterados e {changes['unchanged_models']} sem mudança. Excel: {workbook_path.name}")
+    try:
+        from epoch_collector import run_epoch_collection
+
+        epoch_result = run_epoch_collection(run_id, collected_at.isoformat().replace("+00:00", "Z"))
+        print(f"Epoch AI concluído: {epoch_result['sources_downloaded']}/{epoch_result['sources_total']} fontes. Excel: {epoch_result['workbook_path'].name}")
+    except Exception as error:
+        # A coleta AA já concluída continua válida mesmo se uma fonte pública da
+        # Epoch estiver temporariamente indisponível.
+        print(f"Aviso: coleta Epoch AI não concluída: {error}", file=sys.stderr)
 
 
 if __name__ == "__main__":
