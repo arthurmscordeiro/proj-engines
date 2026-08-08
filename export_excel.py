@@ -1,99 +1,111 @@
-"""Gera snapshots Excel do Radar IA sem depender de ferramentas do Codex."""
+"""Gera snapshots .xlsx do Radar IA usando somente a biblioteca padrão do Python."""
 
 import csv
 from pathlib import Path
-
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from xml.sax.saxutils import escape
+from zipfile import ZIP_DEFLATED, ZipFile
 
 
 def _number(value):
     return None if value in (None, "") else float(value)
 
 
-def _style_header(sheet, range_reference):
-    fill = PatternFill("solid", fgColor="102A43")
-    for row in sheet[range_reference]:
-        for cell in row:
-            cell.fill = fill
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+def _column_name(number):
+    name = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
 
 
-def _apply_grid(sheet):
-    border = Border(bottom=Side(style="thin", color="E2E8F0"))
-    for row in sheet.iter_rows():
-        for cell in row:
-            cell.border = border
+def _cell(column, row, value, style=0):
+    reference = f"{_column_name(column)}{row}"
+    style_attribute = f' s="{style}"' if style else ""
+    if value is None or value == "":
+        return f'<c r="{reference}"{style_attribute}/>'
+    if isinstance(value, (int, float)):
+        return f'<c r="{reference}"{style_attribute} t="n"><v>{value}</v></c>'
+    return f'<c r="{reference}"{style_attribute} t="inlineStr"><is><t>{escape(str(value))}</t></is></c>'
+
+
+def _worksheet(rows, widths, frozen=False, merge_title=False):
+    xml_rows = []
+    for row_number, values in enumerate(rows, start=1):
+        xml_cells = []
+        for column, entry in enumerate(values, start=1):
+            value, style = entry if isinstance(entry, tuple) else (entry, 0)
+            xml_cells.append(_cell(column, row_number, value, style))
+        height = ' ht="30" customHeight="1"' if row_number == 1 and merge_title else ""
+        xml_rows.append(f'<row r="{row_number}"{height}>{"".join(xml_cells)}</row>')
+    columns = "".join(f'<col min="{index}" max="{index}" width="{width}" customWidth="1"/>' for index, width in enumerate(widths, start=1))
+    view = '<sheetViews><sheetView workbookViewId="0" showGridLines="0">'
+    if frozen:
+        view += '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+    view += '</sheetView></sheetViews>'
+    merge = '<mergeCells count="1"><mergeCell ref="A1:F1"/></mergeCells>' if merge_title else ""
+    dimension = f'<dimension ref="A1:{_column_name(len(widths))}{len(rows)}"/>'
+    return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">{dimension}{view}<cols>{columns}</cols><sheetData>{"".join(xml_rows)}</sheetData>{merge}</worksheet>'''
+
+
+def _styles():
+    return '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <numFmts count="1"><numFmt numFmtId="164" formatCode="$#,##0.000"/></numFmts>
+  <fonts count="3"><font><sz val="11"/><name val="Aptos"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="16"/><name val="Aptos"/></font><font><b/><color rgb="FF102A43"/><sz val="11"/><name val="Aptos"/></font></fonts>
+  <fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF102A43"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8F1FA"/><bgColor indexed="64"/></patternFill></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="5">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>
+    <xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+  </cellXfs>
+  <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>'''
 
 
 def build_workbook(history_path: Path, output_dir: Path, run_id: str) -> Path:
     with history_path.open(newline="", encoding="utf-8") as source:
-        rows = list(csv.DictReader(source))
-    rows.sort(key=lambda row: (row["reference_month"], row["model_name"]))
-    latest_month = rows[-1]["reference_month"]
-    latest = [row for row in rows if row["reference_month"] == latest_month]
-    latest.sort(key=lambda row: _number(row["intelligence_index"]) or float("-inf"), reverse=True)
+        history_rows = list(csv.DictReader(source))
+    history_rows.sort(key=lambda row: (row["reference_month"], row["model_name"]))
+    latest_month = history_rows[-1]["reference_month"]
+    latest_rows = [row for row in history_rows if row["reference_month"] == latest_month]
+    latest_rows.sort(key=lambda row: _number(row["intelligence_index"]) or float("-inf"), reverse=True)
 
-    workbook = Workbook()
-    overview = workbook.active
-    overview.title = "Visão geral"
-    current = workbook.create_sheet("Última coleta")
-    history = workbook.create_sheet("Histórico")
-    for sheet in workbook.worksheets:
-        sheet.sheet_view.showGridLines = False
+    overview = [[("Radar IA — histórico de modelos", 1), "", "", "", "", ""], [],
+        [("Mês mais recente", 2), latest_month], [("Modelos na última coleta", 2), len(latest_rows)],
+        [("Observações históricas", 2), len(history_rows)], [("Versão do Intelligence Index", 2), ", ".join(sorted({row["intelligence_index_version"] for row in latest_rows if row["intelligence_index_version"]})) or "Não informada pela API"], [],
+        [("Fonte e uso", 3), "Dados coletados da API gratuita da Artificial Analysis."],
+        [("Metodologia", 3), "O histórico preserva a versão do índice para evitar comparações silenciosas entre metodologias diferentes."],
+        [("Atualização", 3), "Execute python radar_ia.py uma vez por mês. O comando adiciona o mês novo e cria este Excel."],
+        [("Atribuição", 3), "https://artificialanalysis.ai/"]]
 
-    overview.merge_cells("A1:F1")
-    overview["A1"] = "Radar IA — histórico de modelos"
-    overview["A1"].fill = PatternFill("solid", fgColor="102A43")
-    overview["A1"].font = Font(bold=True, color="FFFFFF", size=16)
-    overview["A1"].alignment = Alignment(horizontal="center")
-    overview.row_dimensions[1].height = 30
-    for index, (label, value) in enumerate([
-        ("Mês mais recente", latest_month),
-        ("Modelos na última coleta", len(latest)),
-        ("Observações históricas", len(rows)),
-        ("Versão do Intelligence Index", ", ".join(sorted({row["intelligence_index_version"] for row in latest if row["intelligence_index_version"]})) or "Não informada pela API"),
-    ], start=3):
-        overview.cell(index, 1, label).font = Font(bold=True, color="102A43")
-        overview.cell(index, 1).fill = PatternFill("solid", fgColor="E8F1FA")
-        overview.cell(index, 2, value)
-    for index, (label, value) in enumerate([
-        ("Fonte e uso", "Dados coletados da API gratuita da Artificial Analysis."),
-        ("Metodologia", "O histórico preserva a versão do índice para evitar comparações silenciosas entre metodologias diferentes."),
-        ("Atualização", "Execute python radar_ia.py uma vez por mês. O comando adiciona o mês novo e cria este Excel."),
-        ("Atribuição", "https://artificialanalysis.ai/"),
-    ], start=8):
-        overview.cell(index, 1, label).font = Font(bold=True, color="102A43")
-        overview.cell(index, 2, value).alignment = Alignment(wrap_text=True, vertical="top")
-    overview.column_dimensions["A"].width = 31
-    overview.column_dimensions["B"].width = 85
+    current_headers = ["Posição", "Modelo", "Empresa", "Lançamento", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Versão índice"]
+    current = [[(header, 1) for header in current_headers]]
+    for position, row in enumerate(latest_rows, start=1):
+        current.append([position, row["model_name"], row["model_creator"], row["release_date"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row["intelligence_index_version"]])
 
-    current.append(["Posição", "Modelo", "Empresa", "Lançamento", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Versão índice"])
-    for position, row in enumerate(latest, start=1):
-        current.append([position, row["model_name"], row["model_creator"], row["release_date"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), _number(row["intelligence_index_cost_per_task_usd"]), _number(row["price_1m_input_tokens_usd"]), _number(row["price_1m_output_tokens_usd"]), row["intelligence_index_version"]])
-    _style_header(current, "A1:L1")
-    current.freeze_panes = "A2"
-    for column, width in {"A": 10, "B": 38, "C": 20, "D": 14, "E": 14, "F": 12, "G": 12, "H": 15, "I": 18, "J": 15, "K": 16, "L": 16}.items():
-        current.column_dimensions[column].width = width
-
-    history.append(["Mês", "Coletado em UTC", "ID", "Slug", "Modelo", "Empresa", "Lançamento", "Tier", "Versão índice", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "TTFT (s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Fonte"])
-    for row in rows:
-        history.append([row["reference_month"], row["collected_at_utc"], row["model_id"], row["model_slug"], row["model_name"], row["model_creator"], row["release_date"], row["api_tier"], row["intelligence_index_version"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), _number(row["median_time_to_first_token_seconds"]), _number(row["intelligence_index_cost_per_task_usd"]), _number(row["price_1m_input_tokens_usd"]), _number(row["price_1m_output_tokens_usd"]), row["source_url"]])
-    _style_header(history, "A1:R1")
-    history.freeze_panes = "A2"
-    for column, width in {"A": 10, "B": 22, "C": 38, "D": 32, "E": 42, "F": 20, "G": 14, "H": 12, "I": 14, "J": 12, "K": 12, "L": 12, "M": 15, "N": 12, "O": 18, "P": 15, "Q": 16, "R": 52}.items():
-        history.column_dimensions[column].width = width
-
-    for sheet, date_column, currency_columns in ((current, "D", ("I", "J", "K")), (history, "G", ("O", "P", "Q"))):
-        _apply_grid(sheet)
-        for cell in sheet[date_column][1:]:
-            cell.number_format = "yyyy-mm-dd"
-        for column in currency_columns:
-            for cell in sheet[column][1:]:
-                cell.number_format = '$#,##0.000'
+    history_headers = ["Mês", "Coletado em UTC", "ID", "Slug", "Modelo", "Empresa", "Lançamento", "Tier", "Versão índice", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "TTFT (s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Fonte"]
+    history = [[(header, 1) for header in history_headers]]
+    for row in history_rows:
+        history.append([row["reference_month"], row["collected_at_utc"], row["model_id"], row["model_slug"], row["model_name"], row["model_creator"], row["release_date"], row["api_tier"], row["intelligence_index_version"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), _number(row["median_time_to_first_token_seconds"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row["source_url"]])
 
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / f"Radar_IA_{run_id}.xlsx"
-    workbook.save(output_path)
+    content_types = '''<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'''
+    relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'''
+    workbook = '''<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Visão geral" sheetId="1" r:id="rId1"/><sheet name="Última coleta" sheetId="2" r:id="rId2"/><sheet name="Histórico" sheetId="3" r:id="rId3"/></sheets></workbook>'''
+    workbook_relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'''
+    with ZipFile(output_path, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", content_types)
+        archive.writestr("_rels/.rels", relationships)
+        archive.writestr("xl/workbook.xml", workbook)
+        archive.writestr("xl/_rels/workbook.xml.rels", workbook_relationships)
+        archive.writestr("xl/styles.xml", _styles())
+        archive.writestr("xl/worksheets/sheet1.xml", _worksheet(overview, [31, 85, 12, 12, 12, 12], merge_title=True))
+        archive.writestr("xl/worksheets/sheet2.xml", _worksheet(current, [10, 38, 20, 14, 14, 12, 12, 15, 18, 15, 16, 16], frozen=True))
+        archive.writestr("xl/worksheets/sheet3.xml", _worksheet(history, [10, 22, 38, 32, 42, 20, 14, 12, 14, 12, 12, 12, 15, 12, 18, 15, 16, 52], frozen=True))
     return output_path

@@ -20,10 +20,9 @@ No Windows, a ativação é:
 .venv\Scripts\Activate.ps1
 ```
 
-4. Instale a dependência e configure a chave:
+4. Configure a chave:
 
 ```bash
-pip install -r requirements.txt
 cp .env.example .env
 ```
 
