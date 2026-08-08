@@ -26,6 +26,8 @@ Rode:
 python radar_ia.py
 ```
 
+No VS Code, também é possível usar `Terminal` → `Run Task...` → `Rodar Radar IA`.
+
 O histórico normalizado fica em `data/model_history.csv`; a resposta bruta de
 cada coleta é arquivada em `data/raw/` para auditoria. Cada execução cria um
 novo Excel com data e hora no nome, em `outputs/`; nenhuma versão anterior é

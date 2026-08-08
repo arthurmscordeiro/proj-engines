@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Rodar Radar IA",
+      "type": "process",
+      "command": "python3",
+      "args": ["${workspaceFolder}/radar_ia.py"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "windows": {
+        "command": "python"
+      }
+    }
+  ]
+}
