@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 HISTORY_PATH = DATA_DIR / "model_history.csv"
+RUN_LOG_PATH = DATA_DIR / "run_log.csv"
 ENV_PATH = ROOT / ".env"
 ENDPOINT = "https://artificialanalysis.ai/api/v2/language/models/free"
 
@@ -25,7 +26,21 @@ FIELDS = [
     "median_output_tokens_per_second", "median_time_to_first_token_seconds",
     "intelligence_index_cost_per_task_usd", "price_1m_input_tokens_usd",
     "price_1m_output_tokens_usd", "model_access_type", "access_classification_source",
-    "epoch_model_name", "epoch_accessibility", "source_url",
+    "epoch_model_name", "epoch_accessibility", "change_fields", "source_url",
+]
+
+RUN_LOG_FIELDS = [
+    "run_id", "collected_at_utc", "reference_month", "models_received", "new_models",
+    "changed_models", "unchanged_models", "api_tier", "intelligence_index_version",
+    "epoch_access_status",
+]
+
+COMPARISON_FIELDS = [
+    "model_name", "model_slug", "model_creator", "release_date", "intelligence_index",
+    "coding_index", "agentic_index", "median_output_tokens_per_second",
+    "median_time_to_first_token_seconds", "intelligence_index_cost_per_task_usd",
+    "price_1m_input_tokens_usd", "price_1m_output_tokens_usd", "model_access_type",
+    "access_classification_source", "epoch_model_name", "epoch_accessibility",
 ]
 
 
@@ -124,38 +139,64 @@ def normalize(item: dict, metadata: dict, collected_at: datetime, access_index=N
     return row
 
 
-def append_history(rows: list[dict]) -> int:
+def _normalised_value(value):
+    return "" if value is None else str(value).strip()
+
+
+def _changed_fields(previous: dict, current: dict) -> list[str]:
+    return [field for field in COMPARISON_FIELDS if _normalised_value(previous.get(field)) != _normalised_value(current.get(field))]
+
+
+def append_history(rows: list[dict]) -> dict:
     DATA_DIR.mkdir(exist_ok=True)
     existing_rows = []
     if HISTORY_PATH.exists():
         with HISTORY_PATH.open(newline="", encoding="utf-8") as file:
             existing_rows = list(csv.DictReader(file))
-    existing_by_key = {(row["reference_month"], row["model_id"]): row for row in existing_rows}
-    added = 0
+    for row in existing_rows:
+        if not row.get("change_fields"):
+            row["change_fields"] = "initial_record"
+    latest_by_model = {row["model_id"]: row for row in existing_rows if row.get("model_id")}
+    new_models = changed_models = unchanged_models = 0
     for row in rows:
-        key = (row["reference_month"], row["model_id"])
-        if key not in existing_by_key:
+        previous = latest_by_model.get(row["model_id"])
+        if previous is None:
+            row["change_fields"] = "initial_record"
             existing_rows.append(row)
-            existing_by_key[key] = row
-            added += 1
+            latest_by_model[row["model_id"]] = row
+            new_models += 1
         else:
-            old_row = existing_by_key[key]
-            for field in ("model_access_type", "access_classification_source", "epoch_model_name", "epoch_accessibility"):
-                if not old_row.get(field) or old_row.get(field) == "Unknown":
-                    old_row[field] = row[field]
+            fields = _changed_fields(previous, row)
+            if fields:
+                row["change_fields"] = ", ".join(fields)
+                existing_rows.append(row)
+                latest_by_model[row["model_id"]] = row
+                changed_models += 1
+            else:
+                unchanged_models += 1
     temporary_path = HISTORY_PATH.with_suffix(".tmp")
     with temporary_path.open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=FIELDS)
         writer.writeheader()
         writer.writerows(({field: row.get(field, "") for field in FIELDS} for row in existing_rows))
     temporary_path.replace(HISTORY_PATH)
-    return added
+    return {"new_models": new_models, "changed_models": changed_models, "unchanged_models": unchanged_models}
+
+
+def append_run_log(summary: dict) -> None:
+    DATA_DIR.mkdir(exist_ok=True)
+    write_header = not RUN_LOG_PATH.exists()
+    with RUN_LOG_PATH.open("a", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=RUN_LOG_FIELDS)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(summary)
 
 
 def build_workbook(run_id: str) -> Path:
     from export_excel import build_workbook as export_excel
 
-    return export_excel(HISTORY_PATH, ROOT / "outputs", run_id)
+    return export_excel(HISTORY_PATH, RUN_LOG_PATH, ROOT / "outputs", run_id)
 
 
 def main() -> None:
@@ -168,19 +209,31 @@ def main() -> None:
     raw_path = RAW_DIR / f"language_models_{collected_at.strftime('%Y-%m-%dT%H%M%SZ')}.json"
     raw_path.write_text(json.dumps({"metadata": metadata, "data": models}, ensure_ascii=False, indent=2), encoding="utf-8")
     access_index = None
+    epoch_access_status = "Unavailable"
     try:
         from epoch_access import fetch_epoch_access_index
 
         access_index, epoch_csv = fetch_epoch_access_index()
         epoch_path = RAW_DIR / f"epoch_access_{collected_at.strftime('%Y-%m-%dT%H%M%SZ')}.csv"
         epoch_path.write_text(epoch_csv, encoding="utf-8")
+        epoch_access_status = "Downloaded"
     except Exception as error:
         print(f"Aviso: classificação open weights indisponível nesta coleta: {error}", file=sys.stderr)
     rows = [normalize(item, metadata, collected_at, access_index) for item in models]
-    added = append_history(rows)
     run_id = collected_at.strftime("%Y-%m-%dT%H%M%SZ")
+    changes = append_history(rows)
+    append_run_log({
+        "run_id": run_id,
+        "collected_at_utc": collected_at.isoformat().replace("+00:00", "Z"),
+        "reference_month": collected_at.strftime("%Y-%m"),
+        "models_received": len(models),
+        **changes,
+        "api_tier": metadata.get("tier"),
+        "intelligence_index_version": metadata.get("intelligence_index_version") or metadata.get("artificial_analysis_intelligence_index_version"),
+        "epoch_access_status": epoch_access_status,
+    })
     workbook_path = build_workbook(run_id)
-    print(f"Coleta concluída: {len(models)} modelos recebidos; {added} linhas novas no histórico. Excel: {workbook_path.name}")
+    print(f"Coleta concluída: {len(models)} modelos recebidos; {changes['new_models']} novos, {changes['changed_models']} alterados e {changes['unchanged_models']} sem mudança. Excel: {workbook_path.name}")
 
 
 if __name__ == "__main__":

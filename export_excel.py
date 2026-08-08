@@ -67,20 +67,25 @@ def _styles():
 </styleSheet>'''
 
 
-def build_workbook(history_path: Path, output_dir: Path, run_id: str) -> Path:
+def build_workbook(history_path: Path, run_log_path: Path, output_dir: Path, run_id: str) -> Path:
     with history_path.open(newline="", encoding="utf-8") as source:
         history_rows = list(csv.DictReader(source))
-    history_rows.sort(key=lambda row: (row["reference_month"], row["model_name"]))
-    latest_month = history_rows[-1]["reference_month"]
-    latest_rows = [row for row in history_rows if row["reference_month"] == latest_month]
+    history_rows.sort(key=lambda row: (row["collected_at_utc"], row["model_name"]))
+    latest_by_model = {row["model_id"]: row for row in history_rows if row.get("model_id")}
+    latest_rows = list(latest_by_model.values())
     latest_rows.sort(key=lambda row: _number(row["intelligence_index"]) or float("-inf"), reverse=True)
+    with run_log_path.open(newline="", encoding="utf-8") as source:
+        run_rows = list(csv.DictReader(source))
+    latest_run = run_rows[-1]
     open_weights_count = sum(row.get("model_access_type") == "Open weights" for row in latest_rows)
     proprietary_count = sum(row.get("model_access_type") == "Proprietary" for row in latest_rows)
     unknown_access_count = len(latest_rows) - open_weights_count - proprietary_count
 
     overview = [[("Radar IA — histórico de modelos", 1), "", "", "", "", ""], [],
-        [("Mês mais recente", 2), latest_month], [("Modelos na última coleta", 2), len(latest_rows)],
-        [("Observações históricas", 2), len(history_rows)], [("Versão do Intelligence Index", 2), ", ".join(sorted({row["intelligence_index_version"] for row in latest_rows if row["intelligence_index_version"]})) or "Não informada pela API"], [],
+        [("Última execução", 2), latest_run["collected_at_utc"]], [("Modelos consultados", 2), _number(latest_run["models_received"])],
+        [("Modelos novos nesta execução", 2), _number(latest_run["new_models"])], [("Modelos alterados nesta execução", 2), _number(latest_run["changed_models"])],
+        [("Modelos sem mudança", 2), _number(latest_run["unchanged_models"])], [("Eventos no histórico", 2), len(history_rows)],
+        [("Versão do Intelligence Index", 2), latest_run.get("intelligence_index_version") or "Não informada pela API"], [],
         [("Modelos open weights", 2), open_weights_count], [("Modelos proprietários", 2), proprietary_count], [("Classificação ainda desconhecida", 2), unknown_access_count], [],
         [("Fonte e uso", 3), "Dados coletados da API gratuita da Artificial Analysis."],
         [("Metodologia", 3), "O histórico preserva a versão do índice para evitar comparações silenciosas entre metodologias diferentes."],
@@ -93,17 +98,22 @@ def build_workbook(history_path: Path, output_dir: Path, run_id: str) -> Path:
     for position, row in enumerate(latest_rows, start=1):
         current.append([position, row["model_name"], row["model_creator"], row["release_date"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row.get("model_access_type", "Unknown"), row.get("access_classification_source", ""), row["intelligence_index_version"]])
 
-    history_headers = ["Mês", "Coletado em UTC", "ID", "Slug", "Modelo", "Empresa", "Lançamento", "Tier", "Versão índice", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "TTFT (s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Open weights?", "Fonte abertura", "Modelo Epoch", "Acesso Epoch", "Fonte"]
+    history_headers = ["Mês", "Coletado em UTC", "Campos alterados", "ID", "Slug", "Modelo", "Empresa", "Lançamento", "Tier", "Versão índice", "Intelligence", "Coding", "Agentic", "Speed (tok/s)", "TTFT (s)", "Custo/tarefa (US$)", "Input US$/1M", "Output US$/1M", "Open weights?", "Fonte abertura", "Modelo Epoch", "Acesso Epoch", "Fonte"]
     history = [[(header, 1) for header in history_headers]]
     for row in history_rows:
-        history.append([row["reference_month"], row["collected_at_utc"], row["model_id"], row["model_slug"], row["model_name"], row["model_creator"], row["release_date"], row["api_tier"], row["intelligence_index_version"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), _number(row["median_time_to_first_token_seconds"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row.get("model_access_type", "Unknown"), row.get("access_classification_source", ""), row.get("epoch_model_name", ""), row.get("epoch_accessibility", ""), row["source_url"]])
+        history.append([row["reference_month"], row["collected_at_utc"], row.get("change_fields", ""), row["model_id"], row["model_slug"], row["model_name"], row["model_creator"], row["release_date"], row["api_tier"], row["intelligence_index_version"], _number(row["intelligence_index"]), _number(row["coding_index"]), _number(row["agentic_index"]), _number(row["median_output_tokens_per_second"]), _number(row["median_time_to_first_token_seconds"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4), (_number(row["price_1m_input_tokens_usd"]), 4), (_number(row["price_1m_output_tokens_usd"]), 4), row.get("model_access_type", "Unknown"), row.get("access_classification_source", ""), row.get("epoch_model_name", ""), row.get("epoch_accessibility", ""), row["source_url"]])
+
+    runs_headers = ["Execução", "Coletado em UTC", "Mês", "Modelos consultados", "Novos", "Alterados", "Sem mudança", "Tier API", "Versão índice", "Epoch AI"]
+    runs = [[(header, 1) for header in runs_headers]]
+    for row in run_rows:
+        runs.append([row["run_id"], row["collected_at_utc"], row["reference_month"], _number(row["models_received"]), _number(row["new_models"]), _number(row["changed_models"]), _number(row["unchanged_models"]), row["api_tier"], row["intelligence_index_version"], row["epoch_access_status"]])
 
     output_dir.mkdir(exist_ok=True)
     output_path = output_dir / f"Radar_IA_{run_id}.xlsx"
-    content_types = '''<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'''
+    content_types = '''<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet4.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'''
     relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'''
-    workbook = '''<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Visão geral" sheetId="1" r:id="rId1"/><sheet name="Última coleta" sheetId="2" r:id="rId2"/><sheet name="Histórico" sheetId="3" r:id="rId3"/></sheets></workbook>'''
-    workbook_relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'''
+    workbook = '''<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Visão geral" sheetId="1" r:id="rId1"/><sheet name="Última coleta" sheetId="2" r:id="rId2"/><sheet name="Histórico" sheetId="3" r:id="rId3"/><sheet name="Execuções" sheetId="4" r:id="rId4"/></sheets></workbook>'''
+    workbook_relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet4.xml"/><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'''
     with ZipFile(output_path, "w", ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", content_types)
         archive.writestr("_rels/.rels", relationships)
@@ -112,5 +122,6 @@ def build_workbook(history_path: Path, output_dir: Path, run_id: str) -> Path:
         archive.writestr("xl/styles.xml", _styles())
         archive.writestr("xl/worksheets/sheet1.xml", _worksheet(overview, [31, 85, 12, 12, 12, 12], merge_title=True))
         archive.writestr("xl/worksheets/sheet2.xml", _worksheet(current, [10, 38, 20, 14, 14, 12, 12, 15, 18, 15, 16, 16, 20, 16], frozen=True))
-        archive.writestr("xl/worksheets/sheet3.xml", _worksheet(history, [10, 22, 38, 32, 42, 20, 14, 12, 14, 12, 12, 12, 15, 12, 18, 15, 16, 16, 18, 32, 20, 52], frozen=True))
+        archive.writestr("xl/worksheets/sheet3.xml", _worksheet(history, [10, 22, 35, 38, 32, 42, 20, 14, 12, 14, 12, 12, 12, 15, 12, 18, 15, 16, 16, 18, 32, 20, 52], frozen=True))
+        archive.writestr("xl/worksheets/sheet4.xml", _worksheet(runs, [24, 22, 10, 18, 10, 12, 14, 12, 14, 16], frozen=True))
     return output_path

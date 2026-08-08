@@ -33,6 +33,11 @@ cada coleta é arquivada em `data/raw/` para auditoria. Cada execução cria um
 novo Excel com data e hora no nome, em `outputs/`; nenhuma versão anterior é
 sobrescrita.
 
+O histórico é orientado a mudanças: a primeira execução registra todos os
+modelos e as execuções seguintes acrescentam uma nova linha somente quando um
+campo monitorado mudou. A aba `Execuções` de cada Excel mostra quantos modelos
+foram novos, alterados ou permaneceram iguais naquela rodada.
+
 As pastas `data/` e `outputs/` ficam somente no computador em que a coleta
 ocorre. Faça backup delas regularmente: é ali que está o seu histórico.
 
