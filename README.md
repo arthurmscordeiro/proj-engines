@@ -72,6 +72,12 @@ data de referência, em vez de serem substituídas por um top-N arbitrário.
 
 - `ECI`: score, lançamento, organização, país e acessibilidade.
 - Capacidade acumulada de compute: por organização, por chip e trimestral.
+- `Power - total`: série trimestral consolidada dos data centers cobertos pela
+  Epoch, com compute (H100-equivalents), potência de TI e potência total da
+  instalação. Os períodos futuros são identificados como projeções da Epoch.
+- `Power - owner` e `Power - país`: a mesma série, segmentada por proprietário
+  e país. Cada trimestre usa a última observação disponível de cada data center
+  até o fim daquele trimestre.
 - Data centers: snapshot, timeline (inclusive estimativas futuras da Epoch) e
   quantidades de chips; incluem owner, primary user e country quando informados.
 - Empresas: cadastro, funding rounds, receita, equipe, uso e gasto de compute.
