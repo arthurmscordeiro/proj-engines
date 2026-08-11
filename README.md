@@ -49,6 +49,25 @@ está o seu histórico.
 O arquivo preserva a versão do Intelligence Index retornada pela API, porque
 comparações entre versões metodológicas diferentes requerem cautela.
 
+## Abas para gráficos da Artificial Analysis
+
+Cada Excel da Artificial Analysis inclui também:
+
+- `Highlights Intelligence`, `Highlights Speed` e `Highlights Cost`: seleção
+  editorial de modelos exibida na homepage da Artificial Analysis, ordenada
+  pela métrica da aba. Variações low/medium/high/xhigh/max de uma mesma família
+  são reduzidas à maior configuração de effort.
+- `Intelligence x Cost`: dados da seleção-padrão da Artificial Analysis para o
+  gráfico de dispersão entre Intelligence Index e custo por tarefa.
+- `Intelligence x Abertura`: os 25 modelos com maior Intelligence Index cuja
+  classificação entre proprietary/open weights foi confirmada via Epoch AI.
+- `Top 25 Agentic`: ranking dos 25 modelos com maior Agentic Index, também sem
+  duplicar variantes de effort.
+
+A API gratuita não disponibiliza os flags editoriais de destaque. Por isso as
+seleções públicas da homepage são registradas explicitamente no código, com a
+data de referência, em vez de serem substituídas por um top-N arbitrário.
+
 ## O que vem no Excel da Epoch AI
 
 - `ECI`: score, lançamento, organização, país e acessibilidade.

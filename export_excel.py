@@ -1,6 +1,7 @@
 """Gera snapshots .xlsx do Radar IA usando somente a biblioteca padrão do Python."""
 
 import csv
+import re
 from pathlib import Path
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -104,6 +105,96 @@ def write_tables_workbook(output_path: Path, sheets: list[tuple[str, list, list,
     return output_path
 
 
+# Seleções editoriais publicadas na homepage da Artificial Analysis em
+# 11/08/2026. A API Free não expõe esses flags; por isso elas ficam explícitas
+# e auditáveis no código, em vez de substituir os highlights por um top-N.
+HOME_HIGHLIGHT_SLUGS = [
+    "gemini-3-6-flash", "claude-fable-5", "claude-opus-5", "glm-5-2",
+    "deepseek-v4-flash", "grok-4-5", "kimi-k3",
+    "nvidia-nemotron-3-ultra-550b-a55b", "minimax-m3", "muse-spark-1-2",
+    "gpt-5-6-sol",
+]
+HOME_CHART_SLUGS = [
+    "gpt-oss-120b", "deepseek-v4-flash", "minimax-m3", "gemini-3-6-flash",
+    "gemini-3-5-flash-lite", "qwen3-7-max", "qwen3-8-max", "claude-fable-5",
+    "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5",
+    "claude-4-5-haiku-reasoning", "glm-5-2", "grok-4-5", "gemma-4-31b",
+    "mistral-medium-3-5", "nvidia-nemotron-3-ultra-550b-a55b", "gpt-5-5-pro",
+    "mimo-v2-5-pro", "muse-glimmer", "muse-spark-1-2", "gpt-5-6-sol",
+    "gpt-5-6-terra", "gpt-5-6-luna", "inkling", "kimi-k3", "command-a-plus",
+]
+
+EFFORT_SUFFIX = re.compile(r"-(?:low|medium|high|xhigh|max)(?:-effort)?$")
+EFFORT_BY_NAME = re.compile(r"\b(low|medium|high|xhigh|max)\s+effort\b|\((low|medium|high|xhigh|max)\)", re.I)
+EFFORT_RANK = {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
+
+
+def _effort_level(row: dict) -> str:
+    name = row.get("model_name", "")
+    match = EFFORT_BY_NAME.search(name)
+    if match:
+        return (match.group(1) or match.group(2)).lower()
+    slug = row.get("model_slug", "")
+    suffix = EFFORT_SUFFIX.search(slug)
+    return suffix.group(0).lstrip("-").replace("-effort", "") if suffix else "not specified"
+
+
+def _effort_family(row: dict) -> str:
+    """Group only explicit low/medium/high/xhigh/max variants of one model."""
+    slug = row.get("model_slug", "")
+    return EFFORT_SUFFIX.sub("", slug)
+
+
+def _without_effort_duplicates(rows: list[dict]) -> list[dict]:
+    """Keep the maximum effort variant when a model has several effort levels."""
+    groups = {}
+    for row in rows:
+        family = _effort_family(row)
+        groups.setdefault(family, []).append(row)
+    chosen = []
+    for variants in groups.values():
+        if len(variants) == 1:
+            chosen.append(variants[0])
+            continue
+        chosen.append(max(
+            variants,
+            key=lambda row: (
+                EFFORT_RANK.get(_effort_level(row), 0),
+                _number(row.get("intelligence_index")) or float("-inf"),
+            ),
+        ))
+    return chosen
+
+
+def _highlight_table(rows: list[dict], metric: str, direction: str) -> list[list]:
+    labels = {
+        "intelligence_index": "Intelligence",
+        "median_output_tokens_per_second": "Speed (tok/s)",
+        "intelligence_index_cost_per_task_usd": "Custo/tarefa (US$)",
+    }
+    by_slug = {row.get("model_slug"): row for row in rows}
+    selected = [by_slug[slug] for slug in HOME_HIGHLIGHT_SLUGS if slug in by_slug]
+    selected = [row for row in selected if _number(row.get(metric)) is not None]
+    selected.sort(key=lambda row: _number(row.get(metric)), reverse=direction == "desc")
+    headers = ["Posição", "Modelo", "Empresa", f"Destaque: {labels[metric]}", "Intelligence", "Speed (tok/s)", "Custo/tarefa (US$)", "Effort considerado", "Seleção"]
+    table = [[(header, 1) for header in headers]]
+    for position, row in enumerate(selected, start=1):
+        table.append([
+            position, row["model_name"], row["model_creator"],
+            (_number(row[metric]), 4) if metric == "intelligence_index_cost_per_task_usd" else _number(row[metric]),
+            _number(row["intelligence_index"]), _number(row["median_output_tokens_per_second"]),
+            (_number(row["intelligence_index_cost_per_task_usd"]), 4), _effort_level(row),
+            "Highlight oficial da homepage AA",
+        ])
+    return table
+
+
+def _chart_rows(rows: list[dict], headers: list[str], values) -> list[list]:
+    table = [[(header, 1) for header in headers]]
+    table.extend(values(row) for row in rows)
+    return table
+
+
 def build_workbook(history_path: Path, run_log_path: Path, output_dir: Path, run_id: str) -> Path:
     with history_path.open(newline="", encoding="utf-8") as source:
         history_rows = list(csv.DictReader(source))
@@ -111,6 +202,7 @@ def build_workbook(history_path: Path, run_log_path: Path, output_dir: Path, run
     latest_by_model = {row["model_id"]: row for row in history_rows if row.get("model_id")}
     latest_rows = list(latest_by_model.values())
     latest_rows.sort(key=lambda row: _number(row["intelligence_index"]) or float("-inf"), reverse=True)
+    latest_without_effort_duplicates = _without_effort_duplicates(latest_rows)
     with run_log_path.open(newline="", encoding="utf-8") as source:
         run_rows = list(csv.DictReader(source))
     latest_run = run_rows[-1]
@@ -145,20 +237,56 @@ def build_workbook(history_path: Path, run_log_path: Path, output_dir: Path, run
     for row in run_rows:
         runs.append([row["run_id"], row["collected_at_utc"], row["reference_month"], _number(row["models_received"]), _number(row["new_models"]), _number(row["changed_models"]), _number(row["unchanged_models"]), row["api_tier"], row["intelligence_index_version"], row["epoch_access_status"]])
 
-    output_dir.mkdir(exist_ok=True)
     output_path = output_dir / f"Radar_IA_{run_id}.xlsx"
-    content_types = '''<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet4.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'''
-    relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'''
-    workbook = '''<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Visão geral" sheetId="1" r:id="rId1"/><sheet name="Última coleta" sheetId="2" r:id="rId2"/><sheet name="Histórico" sheetId="3" r:id="rId3"/><sheet name="Execuções" sheetId="4" r:id="rId4"/></sheets></workbook>'''
-    workbook_relationships = '''<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet4.xml"/><Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'''
-    with ZipFile(output_path, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", content_types)
-        archive.writestr("_rels/.rels", relationships)
-        archive.writestr("xl/workbook.xml", workbook)
-        archive.writestr("xl/_rels/workbook.xml.rels", workbook_relationships)
-        archive.writestr("xl/styles.xml", _styles())
-        archive.writestr("xl/worksheets/sheet1.xml", _worksheet(overview, [31, 85, 12, 12, 12, 12], merge_title=True))
-        archive.writestr("xl/worksheets/sheet2.xml", _worksheet(current, [10, 38, 20, 14, 14, 12, 12, 15, 18, 15, 16, 16, 20, 16], frozen=True))
-        archive.writestr("xl/worksheets/sheet3.xml", _worksheet(history, [10, 22, 35, 38, 32, 42, 20, 14, 12, 14, 12, 12, 12, 15, 12, 18, 15, 16, 16, 18, 32, 20, 52], frozen=True))
-        archive.writestr("xl/worksheets/sheet4.xml", _worksheet(runs, [24, 22, 10, 18, 10, 12, 14, 12, 14, 16], frozen=True))
-    return output_path
+    chart_by_slug = {row.get("model_slug"): row for row in latest_without_effort_duplicates}
+    chart_models = [chart_by_slug[slug] for slug in HOME_CHART_SLUGS if slug in chart_by_slug]
+    scatter_models = [
+        row for row in chart_models
+        if _number(row.get("intelligence_index")) is not None
+        and _number(row.get("intelligence_index_cost_per_task_usd")) is not None
+    ]
+    scatter_models.sort(key=lambda row: _number(row["intelligence_index"]), reverse=True)
+    classified_models = [
+        row for row in latest_without_effort_duplicates
+        if row.get("model_access_type") in {"Open weights", "Proprietary"}
+        and _number(row.get("intelligence_index")) is not None
+    ]
+    classified_models.sort(key=lambda row: _number(row["intelligence_index"]), reverse=True)
+    agentic_models = [
+        row for row in latest_without_effort_duplicates
+        if _number(row.get("agentic_index")) is not None
+    ]
+    agentic_models.sort(key=lambda row: _number(row["agentic_index"]), reverse=True)
+
+    scatter_headers = ["Modelo", "Empresa", "Slug", "Intelligence", "Custo/tarefa (US$)", "Speed (tok/s)", "Effort considerado", "Seleção"]
+    scatter = _chart_rows(scatter_models, scatter_headers, lambda row: [
+        row["model_name"], row["model_creator"], row["model_slug"],
+        _number(row["intelligence_index"]), (_number(row["intelligence_index_cost_per_task_usd"]), 4),
+        _number(row["median_output_tokens_per_second"]), _effort_level(row),
+        "Seleção-padrão oficial AA para gráficos",
+    ])
+    openness_headers = ["Posição", "Modelo", "Empresa", "Intelligence", "Open weights?", "Fonte classificação", "Effort considerado"]
+    openness = _chart_rows(classified_models[:25], openness_headers, lambda row: [
+        classified_models.index(row) + 1, row["model_name"], row["model_creator"],
+        _number(row["intelligence_index"]), row["model_access_type"],
+        row.get("access_classification_source", ""), _effort_level(row),
+    ])
+    agentic_headers = ["Posição", "Modelo", "Empresa", "Agentic Index", "Intelligence", "Custo/tarefa (US$)", "Effort considerado"]
+    agentic = _chart_rows(agentic_models[:25], agentic_headers, lambda row: [
+        agentic_models.index(row) + 1, row["model_name"], row["model_creator"],
+        _number(row["agentic_index"]), _number(row["intelligence_index"]),
+        (_number(row["intelligence_index_cost_per_task_usd"]), 4), _effort_level(row),
+    ])
+    sheets = [
+        ("Visão geral", overview, [31, 85, 12, 12, 12, 12], False),
+        ("Highlights Intelligence", _highlight_table(latest_without_effort_duplicates, "intelligence_index", "desc"), [10, 38, 20, 14, 14, 15, 18, 18, 32], True),
+        ("Highlights Speed", _highlight_table(latest_without_effort_duplicates, "median_output_tokens_per_second", "desc"), [10, 38, 20, 15, 14, 15, 18, 18, 32], True),
+        ("Highlights Cost", _highlight_table(latest_without_effort_duplicates, "intelligence_index_cost_per_task_usd", "asc"), [10, 38, 20, 18, 14, 15, 18, 18, 32], True),
+        ("Intelligence x Cost", scatter, [38, 20, 32, 14, 18, 15, 18, 36], True),
+        ("Intelligence x Abertura", openness, [10, 38, 20, 14, 18, 32, 18], True),
+        ("Top 25 Agentic", agentic, [10, 38, 20, 15, 14, 18, 18], True),
+        ("Última coleta", current, [10, 38, 20, 14, 14, 12, 12, 15, 18, 15, 16, 16, 20, 16], True),
+        ("Histórico", history, [10, 22, 35, 38, 32, 42, 20, 14, 12, 14, 12, 12, 12, 15, 12, 18, 15, 16, 16, 18, 32, 20, 52], True),
+        ("Execuções", runs, [24, 22, 10, 18, 10, 12, 14, 12, 14, 16], True),
+    ]
+    return write_tables_workbook(output_path, sheets)
